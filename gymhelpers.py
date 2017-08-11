@@ -5,7 +5,7 @@ from scipy.misc import imresize, imsave
 
 from utils import *
 from agents import AgentEpsGreedy
-from valuefunctions import ValueFunctionDQN
+from valuefunctions import *
 from datastructures import DoubleEndedQueue, SumTree
 from plot_utils import shadow_plot
 
@@ -26,12 +26,12 @@ class ExperimentsManager:
     def __init__(self, env_name, agent_value_function_hidden_layers_size, results_dir_prefix=None, summaries_path=None,
                  figures_dir=None, discount=0.99, decay_eps=0.995, eps_min=0.0001, learning_rate=1E-4, decay_lr=False,
                  learning_rate_end=None, max_step=10000, replay_memory_max_size=100000, ep_verbose=False,
-                 exp_verbose=True, batch_size=64, upload_last_exp=False, double_dqn=False,
+                 exp_verbose=True, batch_size=64, upload_last_exp=False, double_dqn=False, dueling=False,
                  target_params_update_period_steps=1, gym_api_key="", gym_algorithm_id=None, checkpoints_dir='ChkPts',
                  min_avg_rwd=-110, replay_period_steps=1, per_proportional_prioritization=False,
                  per_apply_importance_sampling=False, per_alpha=0.6, per_beta0=0.4, render_environment=False,
                  checkpoint_save_period_steps=None, restoration_checkpoint=None, kpis_dir=None,
-                 use_long_dirnames=False, strategy="epsilon"):
+                 use_long_dirnames=False, strategy="epsilon", backuprule='bellman', temperature=1, action_res=1, target_scale=1):
         self.env_name = env_name
         self.results_dir_prefix = results_dir_prefix
         self.render_environment = render_environment
@@ -64,6 +64,8 @@ class ExperimentsManager:
         self.kpis_dir = kpis_dir
         self.embeddings_metadata_file = None
         self.sprite_path = None
+        self.backuprule = backuprule
+        self.temperature = temperature
 
         # Prioritized Experience Replay parameters. See https://arxiv.org/pdf/1511.05952.pdf
         self.per_proportional_prioritization = per_proportional_prioritization  # Flavour of Prioritized Experience Rep.
@@ -71,11 +73,14 @@ class ExperimentsManager:
         self.per_alpha = per_alpha
         self.per_beta0 = per_beta0
         self.per_beta = self.per_beta0
+        self.action_res = action_res
+        self.target_scale = target_scale
 
         self.agent = None
         self.batch_size = batch_size
         self.agent_value_function_hidden_layers_size = agent_value_function_hidden_layers_size
         self.double_dqn = double_dqn
+        self.dueling = dueling
 
         self.global_step = 0  # Current step over all episodes
         self.step = 0  # Current step per episode
@@ -117,7 +122,7 @@ class ExperimentsManager:
 
     def __print_experiment_progress(self):
         if self.exp_verbose:
-            if self.ep % 8 == 0:
+            if self.ep % 100 == 0:
                 rwd = self.Rwd_per_ep_v[self.exp, self.ep]
                 ep0 = max(0, self.ep - 99)
                 rwd_min = np.amin(self.Rwd_per_ep_v[self.exp, ep0:self.ep + 1])
@@ -178,7 +183,16 @@ class ExperimentsManager:
             action = self.agent.act(self.global_step, state=self.agent.state, saveembedding=save_embedding,
                                     summaries_to_save=summaries_to_save)
             self.agent_value_function[self.exp, self.ep, self.step] = self.agent.current_value
-            state_next, reward, done, info = env.step(action)
+
+            if self.conti_action_flag:
+                # print(self.action_map[action])
+                action_val = self.action_map[action]
+                if not isinstance(action_val, np.ndarray):
+                    action_val = [action_val]
+            else:
+                action_val = action
+
+            state_next, reward, done, info = env.step(action_val)
             self.agent.total_reward += reward
 
             self.agent.save_experience(self.agent.state, action, reward, state_next, done)
@@ -361,8 +375,35 @@ class ExperimentsManager:
 
     def get_environment_actions(self, env):
         if isinstance(env.action_space, gym.spaces.Box):
-            raise NotImplementedError("Continuous action spaces are not supported yet.")
+            self.conti_action_flag = True
+            if self.env_name == "Pendulum-v0" or self.env_name == "InvertedPendulum-v1" or self.env_name == "MountainCarContinuous-v0" or self.env_name == "InvertedDoublePendulum-v1":
+                self.action_map = np.linspace(env.action_space.low[0],env.action_space.high[0],num=self.action_res)
+
+            elif self.env_name == "Reacher-v1" or self.env_name == "Swimmer-v1" or self.env_name == "LunarLanderContinuous-v2":
+                action_map = np.zeros([np.prod(self.action_res), 2])
+                u = np.linspace(env.action_space.low[0], env.action_space.high[0], num=self.action_res[0])
+                v = np.linspace(env.action_space.low[1], env.action_space.high[1], num=self.action_res[1])
+                for i in range(self.action_res[0]):
+                    for j in range(self.action_res[1]):
+                        s = self.action_res[1] * i + j
+                        action_map[s, :] = [u[i], v[j]]
+                self.action_map = action_map
+
+            elif self.env_name == "Hopper-v1":
+                action_map = np.zeros([np.prod(self.action_res), 3])
+                u = np.linspace(env.action_space.low[0], env.action_space.high[0], num=self.action_res[0])
+                v = np.linspace(env.action_space.low[1], env.action_space.high[1], num=self.action_res[1])
+                w = np.linspace(env.action_space.low[2], env.action_space.high[2], num=self.action_res[2])
+                for i in range(self.action_res[0]):
+                    for j in range(self.action_res[1]):
+                        for k in range(self.action_res[2]):
+                            s = self.action_res[2] * self.action_res[1] * i + self.action_res[2] * j + k
+                            action_map[s, :] = [u[i], v[j], w[k]]
+                self.action_map = action_map
+
+            n_actions = np.prod(self.action_res)
         elif isinstance(env.action_space, gym.spaces.Discrete):
+            self.conti_action_flag = False
             n_actions = env.action_space.n
         else:
             raise NotImplementedError("{} action spaces are not supported yet.".format(type(env.action_space)))
@@ -439,24 +480,41 @@ class ExperimentsManager:
 
             # Create agent
             if agent is None:
-                value_function = ValueFunctionDQN(scope="q", state_dim=state_dim, n_actions=n_actions,
-                                                  train_batch_size=self.batch_size, learning_rate=self.learning_rate,
-                                                  hidden_layers_size=self.agent_value_function_hidden_layers_size,
-                                                  decay_lr=self.decay_lr, learning_rate_end=self.learning_rate_end,
-                                                  n_lr_decay_epochs=n_ep*self.max_step/self.replay_period_steps,
-                                                  huber_loss=False, summaries_path=self.summaries_path_current,
-                                                  reset_default_graph=True,
-                                                  checkpoints_dir=self.checkpoints_dir_current,
-                                                  checkpoint_save_period_epochs=ckpt_sv_period_epochs,
-                                                  apply_wis=self.per_apply_importance_sampling,
-                                                  restoration_checkpoint=self.restoration_checkpoint,
-                                                  n_embeddings=n_embeddings, epsilon0=0.9)
+                if self.dueling:
+                    value_function = ValueFunctionDuelingDQN(scope="q", state_dim=state_dim, n_actions=n_actions,
+                                                      train_batch_size=self.batch_size, learning_rate=self.learning_rate,
+                                                      hidden_layers_size=self.agent_value_function_hidden_layers_size,
+                                                      decay_lr=self.decay_lr, learning_rate_end=self.learning_rate_end,
+                                                      n_lr_decay_epochs=n_ep*self.max_step/self.replay_period_steps,
+                                                      huber_loss=False, summaries_path=self.summaries_path_current,
+                                                      reset_default_graph=True,
+                                                      checkpoints_dir=self.checkpoints_dir_current,
+                                                      checkpoint_save_period_epochs=ckpt_sv_period_epochs,
+                                                      apply_wis=self.per_apply_importance_sampling,
+                                                      restoration_checkpoint=self.restoration_checkpoint,
+                                                      n_embeddings=n_embeddings, epsilon0=0.9)
+                else:
+                    value_function = ValueFunctionDQN(scope="q", state_dim=state_dim, n_actions=n_actions,
+                                                      train_batch_size=self.batch_size, learning_rate=self.learning_rate,
+                                                      hidden_layers_size=self.agent_value_function_hidden_layers_size,
+                                                      decay_lr=self.decay_lr, learning_rate_end=self.learning_rate_end,
+                                                      n_lr_decay_epochs=n_ep*self.max_step/self.replay_period_steps,
+                                                      huber_loss=False, summaries_path=self.summaries_path_current,
+                                                      reset_default_graph=True,
+                                                      checkpoints_dir=self.checkpoints_dir_current,
+                                                      checkpoint_save_period_epochs=ckpt_sv_period_epochs,
+                                                      apply_wis=self.per_apply_importance_sampling,
+                                                      restoration_checkpoint=self.restoration_checkpoint,
+                                                      n_embeddings=n_embeddings, epsilon0=0.9, target_scale = self.target_scale)
+
                 self.__create_embeddings_metadata_file(n_embeddings > 0, "_{}".format(value_function.scope))
 
                 self.agent = AgentEpsGreedy(n_actions=n_actions, value_function_model=value_function, eps=0.9,
                                             per_proportional_prioritization=self.per_proportional_prioritization,
                                             per_apply_importance_sampling=self.per_apply_importance_sampling,
-                                            per_alpha=self.per_alpha, per_beta0=self.per_beta0,strategy=self.strategy)
+                                            per_alpha=self.per_alpha, per_beta0=self.per_beta0,
+                                            strategy=self.strategy,backuprule=self.backuprule,
+                                            temperature=self.temperature)
 
                 if self.per_proportional_prioritization:
                     self.agent.memory = SumTree(self.replay_memory_max_size)
@@ -492,7 +550,7 @@ class ExperimentsManager:
         return self.rwd_exps_avg_ma[-1], np.mean(self.n_eps_to_reach_min_avg_rwd), self.Rwd_per_ep_v, self.Loss_per_ep_v
 
     def memory_check(self, env):
-        state_next, reward, done, info = env.step(0)
+        state_next, reward, done, info = env.step(env.action_space.sample())
         exp_size = sys.getsizeof(state_next) * 2 + sys.getsizeof(reward) + sys.getsizeof(done) + sys.getsizeof(int)
         needed_mem_bytes = exp_size * self.replay_memory_max_size
         mem = psutil.virtual_memory()

@@ -31,7 +31,10 @@ def sparsedist(x, scale = 1):
     tau, _ = sparsetau(x)
     p = x - tau
     p[p<0] = 0
-    p = p/p.sum()
+    if p.sum() > 0.0:
+        p = p/p.sum()
+    else:
+        p = np.ones_like(x)/x.shape[0];
     return p
 
 def sparsemax(x,scale = 1):

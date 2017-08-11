@@ -8,7 +8,7 @@ class ExperienceReplayAgent:
     All this agent does is manage a Experience Replay Memory.
     """
     def __init__(self, per_proportional_prioritization=False,
-                 per_apply_importance_sampling=False, per_alpha=0.2, per_beta0=0.4):
+                 per_apply_importance_sampling=False, per_alpha=0.2, per_beta0=0.4, backuprule = 'bellman'):
         # Experience Replay parameters. See https://arxiv.org/pdf/1511.05952.pdf
         self.memory = None  # Experience replay memory
         self.total_reward = 0
@@ -19,6 +19,7 @@ class ExperienceReplayAgent:
         self.per_beta = per_beta0
         self.per_epsilon = 1E-6
         self.prio_max = 0
+        self.backuprule = backuprule
 
     def anneal_per_importance_sampling(self, step, max_step):
         if self.per_proportional_prioritization and self.per_apply_importance_sampling:
@@ -57,7 +58,8 @@ class ExperienceReplayAgent:
 
 class AgentEpsGreedy(ExperienceReplayAgent):
     def __init__(self, n_actions, value_function_model, eps=1., per_proportional_prioritization=False,
-                 per_apply_importance_sampling=False, per_alpha=0.2, per_beta0=0.4, strategy="epsilon"):
+                 per_apply_importance_sampling=False, per_alpha=0.2, per_beta0=0.4, strategy="epsilon",
+                                       backuprule="bellman",temperature=1):
         ExperienceReplayAgent.__init__(self, per_proportional_prioritization=per_proportional_prioritization,
                                        per_apply_importance_sampling=per_apply_importance_sampling, per_alpha=per_alpha,
                                        per_beta0=per_beta0)
@@ -72,6 +74,8 @@ class AgentEpsGreedy(ExperienceReplayAgent):
         self.state = None                       # The current state the agent is on
         self.loss_v = 0                         # Loss value of the last training epoch
         self.step = 0                           # Number of times the agent's act method has been successfully invoked.
+        self.backuprule = backuprule
+        self.temperature = temperature
 
     def act(self, global_step, state=None, saveembedding=False, summaries_to_save=None):
         """
@@ -101,10 +105,10 @@ class AgentEpsGreedy(ExperienceReplayAgent):
                 policy[a_max] += 1. - self.eps
                 a = np.random.choice(self.n_actions, p=policy)
             elif self.strategy == "softmax":
-                policy = maxapproxi.softmax(action_values)
+                policy = maxapproxi.softmax(action_values, scale=self.temperature)
                 a = np.random.choice(self.n_actions, p=policy)
             elif self.strategy == "sparsemax":
-                policy = maxapproxi.sparsedist(action_values)
+                policy = maxapproxi.sparsedist(action_values, scale=self.temperature)
                 a = np.random.choice(self.n_actions, p=policy)
             else:
                 print("Undefined Strategy")
@@ -150,7 +154,12 @@ class AgentEpsGreedy(ExperienceReplayAgent):
                 targets_b = rewards_b + (1. - done_b) * discount * q_n_target_b[np.arange(batch_size), best_a]
             else:
                 q_n_b = self.predict_q_values(states_n_b, use_old_params=True)  # Action values on the next state
-                targets_b = rewards_b + (1. - done_b) * discount * np.amax(q_n_b, axis=1)
+                if self.backuprule == 'bellman':
+                    targets_b = rewards_b + (1. - done_b) * discount * np.amax(q_n_b, axis=1)
+                elif self.backuprule == 'softbellman':
+                    targets_b = rewards_b + (1. - done_b) * discount * maxapproxi.logsumexp(q_n_b, scale=self.temperature)
+                elif self.backuprule == 'sparsebellman':
+                    targets_b = rewards_b + (1. - done_b) * discount * maxapproxi.sparsemax(q_n_b, scale=self.temperature)
 
             targets = self.predict_q_values(states_b)
             for j, action in enumerate(actions_b):
