@@ -26,7 +26,7 @@ class ExperimentsManager:
     def __init__(self, env_name, agent_value_function_hidden_layers_size, results_dir_prefix=None, summaries_path=None,
                  figures_dir=None, discount=0.99, decay_eps=0.995, eps_min=0.0001, learning_rate=1E-4, decay_lr=False,
                  learning_rate_end=None, max_step=10000, replay_memory_max_size=100000, ep_verbose=False,
-                 exp_verbose=True, batch_size=64, upload_last_exp=False, double_dqn=False, dueling=False,
+                 exp_verbose=True, batch_size=64, video_recording=False, upload_last_exp=False, double_dqn=False, dueling=False,
                  target_params_update_period_steps=1, gym_api_key="", gym_algorithm_id=None, checkpoints_dir='ChkPts',
                  min_avg_rwd=-110, replay_period_steps=1, per_proportional_prioritization=False,
                  per_apply_importance_sampling=False, per_alpha=0.6, per_beta0=0.4, render_environment=False,
@@ -52,6 +52,7 @@ class ExperimentsManager:
         self.ep_verbose = ep_verbose  # Whether or not to print progress during episodes
         self.exp_verbose = exp_verbose  # Whether or not to print progress during experiments
         self.upload_last_exp = upload_last_exp
+        self.video_recording = video_recording
         assert target_params_update_period_steps > 0, "The period for updating the target parameters must be positive."
         self.target_params_update_period_steps = target_params_update_period_steps
         self.gym_api_key = gym_api_key
@@ -120,6 +121,15 @@ class ExperimentsManager:
             if self.step > 0 and (self.step+1) % 20 == 0:
                 print(self.episode_progress_msg.format(self.step, self.max_step, loss_v))
 
+    def __video_schedule(self, episode_id):
+        if self.n_ep - 99 <= episode_id and episode_id <= self.n_ep+1:
+            if (episode_id)%10 == 0:
+                return True
+            else:
+                return False
+        else:
+            return False
+        
     def __print_experiment_progress(self):
         if self.exp_verbose:
             if self.ep % 100 == 0:
@@ -284,7 +294,7 @@ class ExperimentsManager:
             os.makedirs(self.gym_stats_dir)
         else:
             raise FileExistsError(self.gym_stats_dir)
-        return wrappers.Monitor(env, self.gym_stats_dir)
+        return wrappers.Monitor(env, self.gym_stats_dir, video_callable=self.__video_schedule)
 
     def __build_layers_size_str(self, state_dim, n_actions):
         layers_size = str(state_dim)
@@ -472,7 +482,7 @@ class ExperimentsManager:
             env.seed(self.exp)
             assert state_dim == env.observation_space.high.shape[0]
 
-            if self.upload_last_exp and self.exp == n_exps-1:
+            if (self.upload_last_exp or self.video_recording) and self.exp == n_exps-1:
                 env = self.__create_gym_stats_directory(env)
 
             self.__update_summaries_path_current()
