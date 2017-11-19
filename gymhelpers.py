@@ -27,11 +27,13 @@ class ExperimentsManager:
                  figures_dir=None, discount=0.99, decay_eps=0.995, eps_min=0.0001, learning_rate=1E-4, decay_lr=False,
                  learning_rate_end=None, max_step=10000, replay_memory_max_size=100000, ep_verbose=False,
                  exp_verbose=True, batch_size=64, video_recording=False, upload_last_exp=False, double_dqn=False, dueling=False,
-                 target_params_update_period_steps=1, gym_api_key="", gym_algorithm_id=None, checkpoints_dir='ChkPts',
+                 target_params_update_period_steps=1, gym_api_key='', gym_algorithm_id=None, checkpoints_dir='ChkPts',
                  min_avg_rwd=-110, replay_period_steps=1, per_proportional_prioritization=False,
                  per_apply_importance_sampling=False, per_alpha=0.6, per_beta0=0.4, render_environment=False,
                  checkpoint_save_period_steps=None, restoration_checkpoint=None, kpis_dir=None,
-                 use_long_dirnames=False, strategy="epsilon", backuprule='bellman', temperature=1, action_res=1, target_scale=1):
+                 use_long_dirnames=False, strategy='epsilon', backuprule='bellman', 
+                 temperature_max=100, decay_temperature=0.95, temperature_min=1,
+                 action_res=1, target_scale=1):
         self.env_name = env_name
         self.results_dir_prefix = results_dir_prefix
         self.render_environment = render_environment
@@ -66,7 +68,9 @@ class ExperimentsManager:
         self.embeddings_metadata_file = None
         self.sprite_path = None
         self.backuprule = backuprule
-        self.temperature = temperature
+        self.temperature_max = temperature_max
+        self.decay_temperature = decay_temperature
+        self.temperature_min = temperature_min
 
         # Prioritized Experience Replay parameters. See https://arxiv.org/pdf/1511.05952.pdf
         self.per_proportional_prioritization = per_proportional_prioritization  # Flavour of Prioritized Experience Rep.
@@ -117,7 +121,7 @@ class ExperimentsManager:
         self.strategy = strategy
 
     def __print_episode_progress(self, loss_v):
-        if self.ep_verbose:
+        if self.ep_verbose and False:
             if self.step > 0 and (self.step+1) % 20 == 0:
                 print(self.episode_progress_msg.format(self.step, self.max_step, loss_v))
 
@@ -132,7 +136,7 @@ class ExperimentsManager:
         
     def __print_experiment_progress(self):
         if self.exp_verbose:
-            if self.ep % 100 == 0:
+            if self.ep % 10 == 0:
                 rwd = self.Rwd_per_ep_v[self.exp, self.ep]
                 ep0 = max(0, self.ep - 99)
                 rwd_min = np.amin(self.Rwd_per_ep_v[self.exp, ep0:self.ep + 1])
@@ -161,7 +165,7 @@ class ExperimentsManager:
     def __maybe_update_target_estimator(self):
         if self.global_step % self.target_params_update_period_steps == 0:
             self.agent.value_func.update_old_params()
-            if self.ep_verbose:
+            if self.ep_verbose and False:
                 print("Copied model parameters to target network.")
 
     def run_episode(self, env, train=True):
@@ -270,7 +274,12 @@ class ExperimentsManager:
 
             if self.agent.eps > self.eps_min:
                 self.agent.eps *= self.decay_eps
-
+            
+            if self.agent.temperature > self.temperature_min:
+                self.agent.temperature *= self.decay_temperature
+            else:
+                self.agent.temperature = self.temperature_min
+            
             if self.ep > 0 and self.ep % (n_ep//4) == 0:  # Save KPIs progress four times during each experiment
                 self.save_kpis("_{}".format(self.ep))
 
@@ -524,7 +533,7 @@ class ExperimentsManager:
                                             per_apply_importance_sampling=self.per_apply_importance_sampling,
                                             per_alpha=self.per_alpha, per_beta0=self.per_beta0,
                                             strategy=self.strategy,backuprule=self.backuprule,
-                                            temperature=self.temperature)
+                                            temperature=self.temperature_max)
 
                 if self.per_proportional_prioritization:
                     self.agent.memory = SumTree(self.replay_memory_max_size)
