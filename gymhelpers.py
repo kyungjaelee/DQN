@@ -265,9 +265,7 @@ class ExperimentsManager:
             self.Avg_Rwd_per_ep[self.exp, self.ep] = np.mean(last_rwds)
             self.Avg_Loss_per_ep[self.exp, self.ep] = np.mean(last_losses)
             self.Agent_Epsilon_per_ep[self.exp, self.ep] = self.agent.eps
-
-            train = self.__maybe_stop_training(stop_training_min_avg_rwd, n_min_training_episodes, train)
-
+            
             if self.Avg_Rwd_per_ep[self.exp, self.ep] >= self.min_avg_rwd:
                 self.n_eps_to_reach_min_avg_rwd[self.exp] = np.minimum(self.ep,
                                                                        self.n_eps_to_reach_min_avg_rwd[self.exp])
@@ -284,6 +282,15 @@ class ExperimentsManager:
                 self.save_kpis("_{}".format(self.ep))
 
             self.__print_experiment_progress()
+
+        # Evaluation
+        train = False
+        self.agent.explore = False
+        for eval_ep in range(self.n_eval):
+            _, total_reward = self.run_episode(env, train)
+            self.Eval_Ret_per_ep[self.exp, eval_ep] = total_reward
+            self.__print_experiment_progress()
+
         self.agent.value_func.save()  # Save one final checkpoint at the end of training
         self.__maybe_save_sprite_image("_{}".format(self.agent.value_func.scope))
         if self.embeddings_metadata_file is not None:
@@ -460,12 +467,15 @@ class ExperimentsManager:
 
     def run_experiments(self, n_exps, n_ep, stop_training_min_avg_rwd=None, plot_results=True, figures_format=None,
                         agent=None, n_embeddings=0, n_min_training_episodes=100):
+        self.n_eval = 100
         self.Rwd_per_ep_v = np.zeros((n_exps, n_ep))
         self.Loss_per_ep_v = np.zeros((n_exps, n_ep))
         self.Avg_Rwd_per_ep = np.zeros((n_exps, n_ep))
         self.n_eps_to_reach_min_avg_rwd = np.zeros(n_exps, dtype=float)
         self.n_eps_to_reach_min_avg_rwd.fill(n_ep)
         self.Avg_Loss_per_ep = np.zeros((n_exps, n_ep))
+        self.Eval_Ret_per_ep = np.zeros((n_exps, self.n_eval))
+
         self.Agent_Epsilon_per_ep = np.zeros((n_exps, n_ep))
         self.agent_value_function = np.zeros((n_exps, n_ep, self.max_step))
         self.episode_duration_s = np.zeros(shape=(n_exps, n_ep), dtype=float)
@@ -566,7 +576,7 @@ class ExperimentsManager:
             plt.show()
 
         # Return the final Rwd averaged over all experiments AND the mean number of episodes needed to reach the min Rwd
-        return self.rwd_exps_avg_ma[-1], np.mean(self.n_eps_to_reach_min_avg_rwd), self.Rwd_per_ep_v, self.Loss_per_ep_v
+        return self.rwd_exps_avg_ma[-1], np.mean(self.n_eps_to_reach_min_avg_rwd), self.Rwd_per_ep_v, self.Loss_per_ep_v, self.Eval_Ret_per_ep
 
     def memory_check(self, env):
         state_next, reward, done, info = env.step(env.action_space.sample())
